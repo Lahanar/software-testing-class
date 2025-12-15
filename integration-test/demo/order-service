@@ -1,0 +1,135 @@
+REQUIREMENTS.md Integration Testing  — Requirements
+Diffulty:Medium
+  
+ภาพรวมระบบ
+ระบบสั่งซื้อ (OrderService) เชื่อมต่อ 4 องค์ประกอบ:
+Inventory: จัดการสต็อก
+Payment: ชำระเงิน
+Shipping: ค่าขนส่ง
+Email: ส่งอีเมลยืนยัน
+โจทย์เน้นฝึก Integration Testing 3 แบบ: Top-down, Bottom-up, Sandwich พร้อมการเขียน Stub/Driver/Spy
+
+  ขอบเขต
+In-scope:
+วงจรสั่งซื้อ: reserve stock → คำนวณราคา/ค่าส่ง → ชำระเงิน → ส่งอีเมล
+กติกาอนุมัติ/ปฏิเสธการจ่ายเงินแบบง่าย
+พฤติกรรมเมื่อจ่ายไม่ผ่านต้องคืนสต็อก
+Out-of-scope:
+Persistence จริง (ใช้ InMemory)
+ระบบผู้ใช้/ที่อยู่/ภาษี/ส่วนลด
+Concurrency และ idempotency (อยู่ในแบบยาก)
+คำนิยามข้อมูล
+
+LineItem: { sku: str, qty: int>0, price: float>0, weight: float>0 }
+Region: "TH" หรืออื่นๆ (เช่น "US", "EU")
+สกุลเงิน: "THB" ตลอด
+ข้อกำหนดเชิงหน้าที่ (Functional Requirements) FR1 Inventory
+
+add_stock(sku, qty): เพิ่มสต็อก; qty ต้อง >= 0 มิฉะนั้นโยน InventoryError
+get_stock(sku): คืนจำนวนคงเหลือ (int)
+reserve(sku, qty): หักสต็อก; qty ต้อง > 0 และต้องมีสต็อกพอ มิฉะนั้นโยน InventoryError
+release(sku, qty): คืนสต็อก; qty ต้อง > 0 มิฉะนั้นโยน InventoryError
+FR2 Shipping
+
+cost(total_weight, region):
+ถ้า region = "TH": total_weight <= 5 → 50.0; > 5 → 120.0
+อื่นๆ → 300.0
+FR3 Payment (SimplePayment)
+
+charge(amount, currency) → transaction_id (str)
+amount <= 0 → ปฏิเสธ (PaymentDeclinedError)
+amount > 1000 → ปฏิเสธ (PaymentDeclinedError)
+กรณีอื่น → อนุมัติ คืนค่า "tx-"
+refund(transaction_id): no-op (ไม่ใช้ในแบบฝึกหัด)
+FR4 OrderService.place_order(customer_email, items, region) → dict
+
+แปลง items เป็น LineItem
+ขั้นตอน:
+Reserve stock สำหรับทุกรายการ; ถ้าไม่พอ → โยน InventoryError และยุติ
+คำนวณ subtotal = Σ(qtyprice), total_weight = Σ(qtyweight)
+คำนวณ shipping ด้วย ShippingService.cost(total_weight, region)
+total = subtotal + shipping; ปัดทศนิยม 2 ตำแหน่งตอนคืนค่า
+เรียก Payment.charge(total, "THB"):
+ถ้าปฏิเสธ → release stock ทั้งหมด แล้วโยน PaymentDeclinedError
+เรียก EmailService.send(email, "Order confirmed", body) เพื่อยืนยัน:
+หากส่งอีเมลล้มเหลว ให้เพิกเฉย ไม่ย้อนกลับคำสั่งซื้อ
+ผลลัพธ์ต้องมี:
+total (float, 2 ตำแหน่ง), shipping (float, 2 ตำแหน่ง), transaction_id (str)
+ข้อกำหนดเชิงไม่ใช่หน้าที่ (Non-Functional Requirements)
+
+ภาษา/สภาพแวดล้อม: Python 3.10+; ใช้ pytest
+ความสามารถทดสอบ: เทสต์ต้องรันผ่านใน GitHub Actions (workflow ที่ให้ไว้)
+เวลา: เทสต์ทั้งหมดควรรันได้ภายในไม่กี่วินาทีบนเครื่องมาตรฐาน/CI
+ข้อสมมติ
+
+ข้อมูล items ถูกต้องตาม type ที่กำหนด (ไม่เช็คประเภทแบบละเอียด)
+ไม่มีค่าใช้จ่ายอื่นนอกจาก shipping
+ไม่พิจารณาความปลอดภัย/การยืนยันตัวตน
+งานที่นักศึกษาต้องทำ (Testing Tasks) A) Top-down Integration
+
+ใช้ InMemoryInventory + Shipping จริง
+เขียน StubPayment สองแบบ: สำเร็จและล้มเหลว
+เขียน SpyEmail เพื่อยืนยันการเรียกใช้งาน
+พิสูจน์ว่า:
+จ่ายล้มเหลว → stock ถูกคืนครบ และโยน PaymentDeclinedError
+จ่ายสำเร็จ → มีการเรียก email 1 ครั้ง และ transaction_id ถูกส่งกลับ
+B) Bottom-up Integration
+
+เขียน driver ทดสอบ InMemoryInventory โดยตรง
+ครอบคลุมกรณี:
+reserve และ release ปกติ
+not enough stock
+ค่า boundary/invalid: reserve/release qty=0 หรือติดลบ, add_stock ติดลบ
+C) Sandwich Integration
+
+ใช้ SimplePayment จริง + Inventory/Shipping จริง + Email spy
+ครอบคลุมกรณี:
+คำสั่งซื้อสำเร็จใน region "TH"
+region อื่น (เช่น "US") ค่าขนส่งต้องเป็น 300
+น้ำหนักรวม > 5kg ใน "TH" ค่าขนส่งต้องเป็น 120
+หลาย line items รวมกันถูกต้อง
+
+เกณฑ์ยอมรับ (Acceptance Criteria ตัวอย่าง) AC1 Payment decline releases stock
+
+Given สต็อก SKU1 = 10
+And รายการสั่งซื้อ SKU1 qty=3 price=100 weight=1
+And Payment ถูก stub ให้ปฏิเสธ
+When เรียก place_order
+Then ต้องโยน PaymentDeclinedError
+And สต็อก SKU1 กลับไปเป็น 10
+AC2 Success sends email once
+
+Given สต็อกพอ
+And Payment ถูก stub ให้สำเร็จและคืน "tx-123"
+When เรียก place_order
+Then ผลลัพธ์ต้องมี transaction_id="tx-123"
+And EmailService.send ถูกเรียก 1 ครั้ง
+AC3 Inventory bottom-up invalid inputs
+
+When reserve qty=0 หรือ <0
+Then ต้องโยน InventoryError
+และกรณี add_stock ติดลบ ต้องโยน InventoryError
+AC4 Shipping rules
+
+Given total_weight=4, region="TH" → shipping=50
+Given total_weight=6, region="TH" → shipping=120
+Given region="US" ใดๆ → shipping=300
+AC5 Sandwich happy path
+
+Given SimplePayment จริง, Email spy
+When place_order ด้วย item price=900 qty=1 weight=2, region="TH"
+Then total ≥ 900 และสต็อกลดลงตามจำนวน
+สิ่งที่ต้องส่ง
+
+ไฟล์ทดสอบ pytest ที่ครอบคลุม A, B, C (เพิ่มจากตัวอย่างใน tests/ ตาม TODO)
+รายงานสั้น 5–10 บรรทัด: สิ่งที่ค้นพบ/ข้อควรระวังในการ integrate
+เทสต์ผ่านใน GitHub Actions
+วิธีรัน
+
+pip install -r requirements.txt
+pytest -q
+เกณฑ์ให้คะแนน (แนะนำผู้สอน)
+
+ความครบถ้วนของเคส (Top-down, Bottom-up, Sandwich): 40%
+คุณภาพเทสต์ (อ่านง่าย, ชัดเจน, ครอบคลุม boundary): 40%
+ผ่าน CI และสรุปบทเรียน: 20%
